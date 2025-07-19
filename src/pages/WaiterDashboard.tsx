@@ -48,8 +48,6 @@ const WaiterDashboard: React.FC = () => {
       
       // Initialize notification service
       initializeNotificationService();
-      // Request notification permission automatically
-      notificationService.requestPermission().then(setNotificationPermission);
       
       fetchAssignedTasks(waiter);
       // --- Realtime subscription for orders ---
@@ -251,6 +249,32 @@ const WaiterDashboard: React.FC = () => {
             <span className={notificationPermission === 'granted' ? 'text-green-600' : 'text-red-600'}>
               {notificationService.isMobile() ? 'Mobile: Browser + App Alerts' : 'Desktop: Browser + App Alerts'}
             </span>
+            {notificationPermission !== 'granted' && (
+              <button
+                onClick={requestNotificationPermission}
+                className="ml-2 px-2 py-1 bg-blue-600 text-white text-xs rounded hover:bg-blue-700 transition-colors"
+              >
+                Enable
+              </button>
+            )}
+            {notificationPermission === 'granted' && (
+              <button
+                onClick={testNotificationSystem}
+                className="ml-2 px-2 py-1 bg-green-600 text-white text-xs rounded hover:bg-green-700 transition-colors"
+                title="Test notification"
+              >
+                Test
+              </button>
+            )}
+            {notificationPermission === 'default' && (
+              <button
+                onClick={requestNotificationPermission}
+                className="ml-2 px-2 py-1 bg-yellow-600 text-white text-xs rounded hover:bg-yellow-700 transition-colors"
+                title="Request permission"
+              >
+                Request
+              </button>
+            )}
           </div>
           <button
             onClick={handleLogout}
