@@ -258,13 +258,7 @@ const WaiterDashboard: React.FC = () => {
               </button>
             )}
             {notificationPermission === 'granted' && (
-              <button
-                onClick={testNotificationSystem}
-                className="ml-2 px-2 py-1 bg-green-600 text-white text-xs rounded hover:bg-green-700 transition-colors"
-                title="Test notification"
-              >
-                Test
-              </button>
+              // Removed the Test button as requested
             )}
             {notificationPermission === 'default' && (
               <button
