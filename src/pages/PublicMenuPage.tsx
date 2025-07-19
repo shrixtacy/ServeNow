@@ -54,6 +54,7 @@ export default function PublicMenuPage() {
   const [isSubmittingOrder, setIsSubmittingOrder] = useState(false);
   const [addedItems, setAddedItems] = useState<Set<string>>(new Set());
   const [removedItemName, setRemovedItemName] = useState<string | null>(null);
+  const [formErrors, setFormErrors] = useState<{ name?: string; phone?: string }>({});
 
   useEffect(() => {
     if (managerId) {
@@ -184,8 +185,31 @@ export default function PublicMenuPage() {
     return cart.reduce((total, item) => total + item.quantity, 0);
   };
 
+  const validateOrderForm = () => {
+    const errors: { name?: string; phone?: string } = {};
+    // Name validation: required, max 40 chars
+    if (!orderForm.customerName.trim()) {
+      errors.name = 'Name is required.';
+    } else if (orderForm.customerName.length > 40) {
+      errors.name = 'Name must be at most 40 characters.';
+    }
+    // Phone validation: optional, but if present must be 10 digits
+    if (orderForm.customerPhone) {
+      const phone = orderForm.customerPhone.replace(/\D/g, '');
+      if (phone.length !== 10) {
+        errors.phone = 'Phone number must be exactly 10 digits.';
+      }
+    }
+    setFormErrors(errors);
+    return Object.keys(errors).length === 0;
+  };
+
   const submitOrder = async () => {
     if (!restaurant || cart.length === 0 || !orderForm.customerName || !orderForm.tableNumber) {
+      return;
+    }
+    // API validation
+    if (!validateOrderForm()) {
       return;
     }
     // Request notification permission only on user interaction (place order)
@@ -716,6 +740,9 @@ export default function PublicMenuPage() {
                     placeholder="Enter your name"
                     required
                   />
+                  {formErrors.name && (
+                    <p className="text-red-600 text-xs mt-1">{formErrors.name}</p>
+                  )}
                 </div>
 
                 <div>
@@ -730,6 +757,9 @@ export default function PublicMenuPage() {
                     className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-black focus:border-transparent outline-none"
                     placeholder="Enter your phone number"
                   />
+                  {formErrors.phone && (
+                    <p className="text-red-600 text-xs mt-1">{formErrors.phone}</p>
+                  )}
                 </div>
 
                 <div>
