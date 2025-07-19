@@ -110,8 +110,17 @@ const WaiterDashboard: React.FC = () => {
   };
 
   const showNotification = async (orderId: string, tableNumber: number) => {
-    const success = await notificationService.showWaiterNotification(orderId, tableNumber);
-    if (!success) {
+    try {
+      const success = await notificationService.showWaiterNotification(orderId, tableNumber);
+      if (!success) {
+        // Fallback: show toast notification
+        toast.success(`🧑‍🍽️ New table to serve! Order #${orderId}, Table ${tableNumber}`, {
+          duration: 5000,
+          position: 'top-center'
+        });
+      }
+    } catch (error) {
+      console.error('Error showing notification:', error);
       // Fallback: show toast notification
       toast.success(`🧑‍🍽️ New table to serve! Order #${orderId}, Table ${tableNumber}`, {
         duration: 5000,
@@ -228,14 +237,15 @@ const WaiterDashboard: React.FC = () => {
   };
 
   const testNotificationSystem = async () => {
-    const deviceInfo = notificationService.getDeviceInfo();
-    console.log('Device Info:', deviceInfo);
-    
-    const success = await notificationService.showTestNotification();
-    if (success) {
-      toast.success('Test notification sent!');
-    } else {
-      toast.error('Failed to send test notification');
+    try {
+      const success = await notificationService.showTestNotification();
+      if (success) {
+        toast.success('Test notification sent!');
+      } else {
+        toast.error('Failed to send test notification');
+      }
+    } catch (error) {
+      toast.error('Error sending test notification');
     }
   };
 
