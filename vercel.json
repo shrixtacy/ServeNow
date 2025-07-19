@@ -1,6 +1,4 @@
 {
-  "buildCommand": "npm run build:simple",
-  "outputDirectory": "dist",
   "rewrites": [
     { "source": "/(.*)", "destination": "/" }
   ]
