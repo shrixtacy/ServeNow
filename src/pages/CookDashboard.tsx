@@ -1,6 +1,7 @@
 import React, { useEffect, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { supabase, Order } from '../lib/supabase';
+import notificationService from '../lib/notificationService';
 import toast from 'react-hot-toast';
 
 interface AssignedDish {
@@ -26,6 +27,7 @@ const getNotifiedTasks = (staffId: string) => {
   const stored = localStorage.getItem(key);
   return stored ? new Set<string>(JSON.parse(stored)) : new Set<string>();
 };
+
 const addNotifiedTask = (staffId: string, taskKey: string) => {
   const key = `notifiedTasks-${staffId}-cook`;
   const notified = getNotifiedTasks(staffId);
@@ -41,11 +43,10 @@ const CookDashboard: React.FC = () => {
   const navigate = useNavigate();
   const [cookRole, setCookRole] = useState('');
   const [updatingDish, setUpdatingDish] = useState<string | null>(null);
-  const [notifiedTasks, setNotifiedTasks] = useState<Set<string>>(new Set());
   const [notificationPermission, setNotificationPermission] = useState<NotificationPermission>('default');
+  const [isNotificationServiceReady, setIsNotificationServiceReady] = useState(false);
 
   useEffect(() => {
-    console.log('[CookDashboard] useEffect mount');
     let cook: Cook | null = null;
     const staff = sessionStorage.getItem('staff');
     if (staff) {
@@ -54,14 +55,8 @@ const CookDashboard: React.FC = () => {
         setCookName(cook.full_name);
         setCookRole(cook.role || '');
         
-        // Initialize notification permission state
-        if ('Notification' in window) {
-          setNotificationPermission(Notification.permission);
-          console.log('[CookDashboard] Initial notification permission:', Notification.permission);
-        }
-        
-        // Request notification permission on component mount
-        requestNotificationPermission();
+        // Initialize notification service
+        initializeNotificationService();
         
         fetchAssignedDishes(cook);
         // --- Realtime subscription for orders ---
@@ -76,9 +71,7 @@ const CookDashboard: React.FC = () => {
               filter: `restaurant_id=eq.${cook.restaurant_id}`
             },
             (payload) => {
-              console.log('[CookDashboard] Real-time event received:', payload);
               if (cook) {
-                console.log('[CookDashboard] Calling fetchAssignedDishes from real-time event');
                 fetchAssignedDishes(cook);
               }
             }
@@ -89,141 +82,65 @@ const CookDashboard: React.FC = () => {
         };
       }
     } else {
-      console.log('[CookDashboard] No staff session found, redirecting to login');
       navigate('/staff-login');
     }
   }, [navigate]);
 
+  const initializeNotificationService = async () => {
+    try {
+      const success = await notificationService.initialize();
+      setIsNotificationServiceReady(success);
+      setNotificationPermission(notificationService.getPermission());
+    } catch (error) {
+      console.error('Failed to initialize notification service:', error);
+    }
+  };
+
   const requestNotificationPermission = async () => {
-    if ('Notification' in window) {
-      if (Notification.permission === 'default') {
-        try {
-          const permission = await Notification.requestPermission();
-          console.log('[CookDashboard] Notification permission:', permission);
-          setNotificationPermission(permission);
-          
-          // Show feedback based on permission result
-          if (permission === 'granted') {
-            toast.success('Notifications enabled! You will receive alerts for new tasks.', {
-              duration: 4000,
-              position: 'top-center'
-            });
-          } else if (permission === 'denied') {
-            toast.error('Notifications disabled. You can still see alerts in the app.', {
-              duration: 4000,
-              position: 'top-center'
-            });
-          }
-        } catch (err) {
-          console.error('[CookDashboard] Error requesting notification permission:', err);
-          toast.error('Could not request notification permission. Alerts will show in the app.', {
-            duration: 4000,
-            position: 'top-center'
-          });
-        }
-      } else {
-        // Permission already set
-        setNotificationPermission(Notification.permission);
+    try {
+      const permission = await notificationService.requestPermission();
+      setNotificationPermission(permission);
+      
+      if (permission === 'granted') {
+        toast.success('Notifications enabled! You will receive alerts for new tasks.', {
+          duration: 4000,
+          position: 'top-center'
+        });
+      } else if (permission === 'denied') {
+        toast.error('Notifications disabled. You can still see alerts in the app.', {
+          duration: 4000,
+          position: 'top-center'
+        });
       }
-    } else {
-      // Notifications not supported
-      toast('Browser notifications not supported. Alerts will show in the app.', {
+    } catch (err) {
+      toast.error('Could not request notification permission. Alerts will show in the app.', {
         duration: 4000,
-        position: 'top-center',
-        style: {
-          background: '#3B82F6',
-          color: 'white'
-        }
+        position: 'top-center'
       });
     }
   };
 
-  const showNotification = (orderId: string, tableNumber: number) => {
-    const message = `👨‍🍳 New dish assigned to prepare! (Order #${orderId}, Table ${tableNumber})`;
-    
-    // Always check current permission state (don't rely on state)
-    let currentPermission = 'default';
-    if ('Notification' in window) {
-      currentPermission = Notification.permission;
-      // Update state if it changed
-      if (currentPermission !== notificationPermission) {
-        console.log('[CookDashboard] Permission state updated from', notificationPermission, 'to', currentPermission);
-        setNotificationPermission(currentPermission as NotificationPermission);
-      }
+  const showNotification = async (orderId: string, tableNumber: number) => {
+    const success = await notificationService.showCookNotification(orderId, tableNumber);
+    if (!success) {
+      // Fallback: show toast notification
+      toast.success(`👨‍🍳 New dish assigned! Order #${orderId}, Table ${tableNumber}`, {
+        duration: 5000,
+        position: 'top-center'
+      });
     }
-    
-    // Try browser notifications first (use current permission, not state)
-    console.log('[CookDashboard] Current permission:', currentPermission, 'State permission:', notificationPermission);
-    console.log('[CookDashboard] Notification API available:', 'Notification' in window);
-    console.log('[CookDashboard] Tab focused:', document.hasFocus());
-    
-    if ('Notification' in window && currentPermission === 'granted') {
-      try {
-        console.log('[CookDashboard] Attempting to show browser notification...');
-        
-        // Check if tab is focused (Chrome requirement)
-        if (!document.hasFocus()) {
-          console.log('[CookDashboard] Tab not focused - Chrome may not show notification');
-        }
-        
-        const notification = new Notification('ServeNow', {
-          body: message,
-          icon: '/vite.svg',
-          tag: `cook-task-${orderId}-${tableNumber}`,
-        });
-
-        // Auto-close notification after 10 seconds
-        setTimeout(() => {
-          notification.close();
-        }, 10000);
-
-        // Handle notification click
-        notification.onclick = () => {
-          window.focus();
-          notification.close();
-        };
-        
-        // Handle notification show event
-        notification.onshow = () => {
-          console.log('[CookDashboard] Browser notification shown successfully');
-        };
-        
-        // Handle notification error event
-        notification.onerror = (error: any) => {
-          console.error('[CookDashboard] Browser notification error:', error);
-        };
-        
-        console.log('[CookDashboard] Browser notification created successfully');
-      } catch (error) {
-        console.error('[CookDashboard] Browser notification failed:', error);
-        if (error instanceof Error) {
-          console.error('[CookDashboard] Error details:', error.message, error.stack);
-        }
-      }
-    } else {
-      console.log('[CookDashboard] Browser notifications not available or not granted. Permission:', currentPermission);
-      console.log('[CookDashboard] Notification API available:', 'Notification' in window);
-    }
-    
-    console.log('[CookDashboard] Browser notification attempt completed');
   };
 
   const fetchAssignedDishes = async (cook: Cook) => {
     setLoading(true);
     setError('');
     try {
-      console.log('[CookDashboard] fetchAssignedDishes called for cook:', cook);
-      console.log('[CookDashboard] Cook ID:', cook.id);
-      console.log('[CookDashboard] Restaurant ID:', cook.restaurant_id);
-      
       // Get all orders for the cook's restaurant
       const { data: orders, error: ordersError } = await supabase
         .from('orders')
         .select('*')
         .eq('restaurant_id', cook.restaurant_id);
       if (ordersError) throw ordersError;
-      console.log('[CookDashboard] Fetched orders:', orders);
-      console.log('[CookDashboard] Number of orders found:', orders?.length || 0);
       
       // Flatten all assigned dishes for this cook using id (UUID)
       const assigned: AssignedDish[] = [];
@@ -231,11 +148,9 @@ const CookDashboard: React.FC = () => {
       
       // Use localStorage for notified tasks
       const notified = getNotifiedTasks(cook.id);
+      
       for (const order of orders) {
-        console.log('[CookDashboard] Processing order:', order.id);
-        console.log('[CookDashboard] Order items:', order.items);
         for (const item of order.items) {
-          console.log('[CookDashboard] Checking item:', item.name, 'assigned_cook_id:', item.assigned_cook_id, 'cook.id:', cook.id);
           if (item.assigned_cook_id === cook.id) {
             const assignedDish: AssignedDish = {
               orderId: order.id,
@@ -251,30 +166,22 @@ const CookDashboard: React.FC = () => {
             
             // Check if this is a new task that hasn't been notified yet
             const taskKey = `${order.id}-${item.name}`;
-            console.log('[CookDashboard] Checking task:', taskKey, 'already notified:', notified.has(taskKey), 'cook_status:', item.cook_status);
             if (!notified.has(taskKey) && (!item.cook_status || item.cook_status === 'pending')) {
-              console.log('[CookDashboard] Adding new task for notification:', taskKey);
               newTasks.push({ taskKey, dish: assignedDish });
               addNotifiedTask(cook.id, taskKey);
-            } else {
-              console.log('[CookDashboard] Task already notified or not pending:', taskKey);
             }
           }
         }
       }
       
-      console.log('[CookDashboard] Filtered assigned dishes:', assigned);
       setAssignedDishes(assigned);
       
       // Show notifications for new tasks
-      console.log('[CookDashboard] New tasks to notify:', newTasks);
       newTasks.forEach(({ dish }) => {
-        console.log('[CookDashboard] Showing notification for:', dish);
         showNotification(dish.orderId, dish.tableNumber);
       });
       
     } catch (err: any) {
-      console.error('[CookDashboard] Error in fetchAssignedDishes:', err);
       setError('Failed to load assigned dishes.');
     } finally {
       setLoading(false);
@@ -315,17 +222,14 @@ const CookDashboard: React.FC = () => {
         .select();
       if (updateError) {
         toast.error('Failed to update status');
-        console.error('[CookDashboard] Status update error for', dishName, ':', updateError);
       } else {
         toast.success('Status updated!');
-        console.log('[CookDashboard] Status update success for', dishName, 'to', nextStatus, updateData);
       }
       // Refresh assigned dishes
       const staff = sessionStorage.getItem('staff');
       if (staff) fetchAssignedDishes(JSON.parse(staff));
     } catch (err: any) {
       toast.error('Failed to update status');
-      console.error('[CookDashboard] Status update error for', dishName, ':', err);
     } finally {
       setUpdatingDish(null);
     }
@@ -334,6 +238,18 @@ const CookDashboard: React.FC = () => {
   const handleLogout = () => {
     sessionStorage.removeItem('staff');
     navigate('/staff-login');
+  };
+
+  const testNotificationSystem = async () => {
+    const deviceInfo = notificationService.getDeviceInfo();
+    console.log('Device Info:', deviceInfo);
+    
+    const success = await notificationService.showTestNotification();
+    if (success) {
+      toast.success('Test notification sent!');
+    } else {
+      toast.error('Failed to send test notification');
+    }
   };
 
   return (
@@ -345,7 +261,7 @@ const CookDashboard: React.FC = () => {
           <div className="flex items-center space-x-2 text-sm">
             <div className={`w-3 h-3 rounded-full ${notificationPermission === 'granted' ? 'bg-green-500' : 'bg-red-500'}`}></div>
             <span className={notificationPermission === 'granted' ? 'text-green-600' : 'text-red-600'}>
-              {notificationPermission === 'granted' ? 'Desktop: Browser + App Alerts' : 'Mobile: App Alerts Only'}
+              {notificationService.isMobile() ? 'Mobile: Browser + App Alerts' : 'Desktop: Browser + App Alerts'}
             </span>
             {notificationPermission !== 'granted' && (
               <button
@@ -357,26 +273,22 @@ const CookDashboard: React.FC = () => {
             )}
             {notificationPermission === 'granted' && (
               <button
-                onClick={() => showNotification('TestOrder', 1)}
+                onClick={testNotificationSystem}
                 className="ml-2 px-2 py-1 bg-green-600 text-white text-xs rounded hover:bg-green-700 transition-colors"
-                title="Test browser notification"
+                title="Test notification"
               >
-                Test Browser
+                Test
               </button>
             )}
             {notificationPermission === 'default' && (
               <button
-                onClick={() => {
-                  setNotificationPermission(Notification.permission);
-                  requestNotificationPermission();
-                }}
+                onClick={requestNotificationPermission}
                 className="ml-2 px-2 py-1 bg-yellow-600 text-white text-xs rounded hover:bg-yellow-700 transition-colors"
-                title="Refresh permission status"
+                title="Request permission"
               >
-                Refresh
+                Request
               </button>
             )}
-
           </div>
           <button
             onClick={handleLogout}
