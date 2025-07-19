@@ -257,9 +257,6 @@ const WaiterDashboard: React.FC = () => {
                 Enable
               </button>
             )}
-            {notificationPermission === 'granted' && (
-              // Removed the Test button as requested
-            )}
             {notificationPermission === 'default' && (
               <button
                 onClick={requestNotificationPermission}
