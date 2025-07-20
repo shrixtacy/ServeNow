@@ -20,19 +20,6 @@ interface Cook {
   restaurant_id: string;
 }
 
-// Utility functions for notified tasks
-const getNotifiedTasks = (staffId: string) => {
-  const key = `notifiedTasks-${staffId}-cook`;
-  const stored = localStorage.getItem(key);
-  return stored ? new Set<string>(JSON.parse(stored)) : new Set<string>();
-};
-const addNotifiedTask = (staffId: string, taskKey: string) => {
-  const key = `notifiedTasks-${staffId}-cook`;
-  const notified = getNotifiedTasks(staffId);
-  notified.add(taskKey);
-  localStorage.setItem(key, JSON.stringify(Array.from(notified)));
-};
-
 const CookDashboard: React.FC = () => {
   const [cookName, setCookName] = useState('');
   const [assignedDishes, setAssignedDishes] = useState<AssignedDish[]>([]);
@@ -138,8 +125,8 @@ const CookDashboard: React.FC = () => {
     }
   };
 
-  const showNotification = (orderId: string, tableNumber: number) => {
-    const message = `👨‍🍳 New dish assigned to prepare! (Order #${orderId}, Table ${tableNumber})`;
+  const showNotification = (dishName: string, tableNumber: number, customerName: string) => {
+    const message = `New Cooking Task: ${dishName} for Table ${tableNumber} (${customerName})`;
     
     // Always check current permission state (don't rely on state)
     let currentPermission = 'default';
@@ -166,10 +153,13 @@ const CookDashboard: React.FC = () => {
           console.log('[CookDashboard] Tab not focused - Chrome may not show notification');
         }
         
-        const notification = new Notification('ServeNow', {
-          body: message,
+        const notification = new Notification('New Cooking Task Assigned!', {
+          body: `${dishName} for Table ${tableNumber} (${customerName})`,
           icon: '/vite.svg',
-          tag: `cook-task-${orderId}-${tableNumber}`,
+          badge: '/vite.svg',
+          tag: 'cook-task-new',
+          requireInteraction: false,
+          silent: false
         });
 
         // Auto-close notification after 10 seconds
@@ -227,10 +217,8 @@ const CookDashboard: React.FC = () => {
       
       // Flatten all assigned dishes for this cook using id (UUID)
       const assigned: AssignedDish[] = [];
-      const newTasks: { taskKey: string; dish: AssignedDish }[] = [];
+      const newTasks: AssignedDish[] = [];
       
-      // Use localStorage for notified tasks
-      const notified = getNotifiedTasks(cook.id);
       for (const order of orders) {
         console.log('[CookDashboard] Processing order:', order.id);
         console.log('[CookDashboard] Order items:', order.items);
@@ -251,11 +239,11 @@ const CookDashboard: React.FC = () => {
             
             // Check if this is a new task that hasn't been notified yet
             const taskKey = `${order.id}-${item.name}`;
-            console.log('[CookDashboard] Checking task:', taskKey, 'already notified:', notified.has(taskKey), 'cook_status:', item.cook_status);
-            if (!notified.has(taskKey) && (!item.cook_status || item.cook_status === 'pending')) {
+            console.log('[CookDashboard] Checking task:', taskKey, 'already notified:', notifiedTasks.has(taskKey), 'cook_status:', item.cook_status);
+            if (!notifiedTasks.has(taskKey) && (!item.cook_status || item.cook_status === 'pending')) {
               console.log('[CookDashboard] Adding new task for notification:', taskKey);
-              newTasks.push({ taskKey, dish: assignedDish });
-              addNotifiedTask(cook.id, taskKey);
+              newTasks.push(assignedDish);
+              setNotifiedTasks(prev => new Set([...prev, taskKey]));
             } else {
               console.log('[CookDashboard] Task already notified or not pending:', taskKey);
             }
@@ -268,9 +256,9 @@ const CookDashboard: React.FC = () => {
       
       // Show notifications for new tasks
       console.log('[CookDashboard] New tasks to notify:', newTasks);
-      newTasks.forEach(({ dish }) => {
-        console.log('[CookDashboard] Showing notification for:', dish);
-        showNotification(dish.orderId, dish.tableNumber);
+      newTasks.forEach(task => {
+        console.log('[CookDashboard] Showing notification for:', task);
+        showNotification(task.dishName, task.tableNumber, task.customerName);
       });
       
     } catch (err: any) {
@@ -357,7 +345,7 @@ const CookDashboard: React.FC = () => {
             )}
             {notificationPermission === 'granted' && (
               <button
-                onClick={() => showNotification('TestOrder', 1)}
+                onClick={() => showNotification('Test Dish', 1, 'Test Customer')}
                 className="ml-2 px-2 py-1 bg-green-600 text-white text-xs rounded hover:bg-green-700 transition-colors"
                 title="Test browser notification"
               >
