@@ -1,7 +1,6 @@
 import React, { useEffect, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { supabase, Order } from '../lib/supabase';
-import notificationService from '../lib/notificationService';
 import toast from 'react-hot-toast';
 
 interface AssignedTask {
@@ -21,7 +20,6 @@ const getNotifiedTasks = (staffId: string) => {
   const stored = localStorage.getItem(key);
   return stored ? new Set<string>(JSON.parse(stored)) : new Set<string>();
 };
-
 const addNotifiedTask = (staffId: string, taskKey: string) => {
   const key = `notifiedTasks-${staffId}-waiter`;
   const notified = getNotifiedTasks(staffId);
@@ -36,8 +34,6 @@ const WaiterDashboard: React.FC = () => {
   const [error, setError] = useState('');
   const navigate = useNavigate();
   const [updatingDish, setUpdatingDish] = useState<string | null>(null);
-  const [notificationPermission, setNotificationPermission] = useState<NotificationPermission>('default');
-  const [isNotificationServiceReady, setIsNotificationServiceReady] = useState(false);
 
   useEffect(() => {
     let waiter = null;
@@ -45,10 +41,12 @@ const WaiterDashboard: React.FC = () => {
     if (staff) {
       waiter = JSON.parse(staff);
       setWaiterName(waiter.full_name);
-      
-      // Initialize notification service
-      initializeNotificationService();
-      
+      // Initialize notification permission state
+      if ('Notification' in window) {
+        if (Notification.permission === 'default') {
+          Notification.requestPermission();
+        }
+      }
       fetchAssignedTasks(waiter);
       // --- Realtime subscription for orders ---
       const channel = supabase
@@ -75,48 +73,23 @@ const WaiterDashboard: React.FC = () => {
     // eslint-disable-next-line
   }, [navigate]);
 
-  const initializeNotificationService = async () => {
-    try {
-      const success = await notificationService.initialize();
-      setIsNotificationServiceReady(success);
-      setNotificationPermission(notificationService.getPermission());
-    } catch (error) {
-      console.error('Failed to initialize notification service:', error);
-    }
-  };
-
-  const requestNotificationPermission = async () => {
-    try {
-      const permission = await notificationService.requestPermission();
-      setNotificationPermission(permission);
-      
-      if (permission === 'granted') {
-        toast.success('Notifications enabled! You will receive alerts for new tasks.', {
-          duration: 4000,
-          position: 'top-center'
+  const showNotification = (orderId: string, tableNumber: number) => {
+    const message = `🧑‍🍽️ New table to serve! (Order #${orderId}, Table ${tableNumber})`;
+    if ('Notification' in window && Notification.permission === 'granted') {
+      try {
+        const notification = new Notification('ServeNow', {
+          body: message,
+          icon: '/vite.svg',
+          tag: `waiter-task-${orderId}-${tableNumber}`,
         });
-      } else if (permission === 'denied') {
-        toast.error('Notifications disabled. You can still see alerts in the app.', {
-          duration: 4000,
-          position: 'top-center'
-        });
+        setTimeout(() => notification.close(), 10000);
+        notification.onclick = () => {
+          window.focus();
+          notification.close();
+        };
+      } catch (error) {
+        // fallback: do nothing
       }
-    } catch (err) {
-      toast.error('Could not request notification permission. Alerts will show in the app.', {
-        duration: 4000,
-        position: 'top-center'
-      });
-    }
-  };
-
-  const showNotification = async (orderId: string, tableNumber: number) => {
-    const success = await notificationService.showWaiterNotification(orderId, tableNumber);
-    if (!success) {
-      // Fallback: show toast notification
-      toast.success(`🧑‍🍽️ New table to serve! Order #${orderId}, Table ${tableNumber}`, {
-        duration: 5000,
-        position: 'top-center'
-      });
     }
   };
 
@@ -130,12 +103,10 @@ const WaiterDashboard: React.FC = () => {
         .select('*')
         .eq('restaurant_id', waiter.restaurant_id);
       if (ordersError) throw ordersError;
-      
       // Flatten all assigned tasks for this waiter
       const assigned: AssignedTask[] = [];
       const newTasks: { taskKey: string; task: AssignedTask }[] = [];
       const notified = getNotifiedTasks(waiter.id);
-      
       for (const order of orders) {
         for (const item of order.items) {
           if (item.assigned_waiter_id === waiter.id) {
@@ -159,8 +130,6 @@ const WaiterDashboard: React.FC = () => {
         }
       }
       setAssignedTasks(assigned);
-      
-      // Show notifications for new tasks
       newTasks.forEach(({ task }) => {
         showNotification(task.orderId, task.tableNumber);
       });
@@ -196,8 +165,10 @@ const WaiterDashboard: React.FC = () => {
           const allDishesCompleted = updatedItems.every((item: any) => item.cook_status === 'completed' && item.waiter_status === 'served');
           if (allDishesCompleted) {
             newOrderStatus = 'completed';
+            console.log('[WaiterDashboard] All dishes completed, setting order status to completed');
           } else {
             newOrderStatus = 'served';
+            console.log('[WaiterDashboard] Dish served, setting order status to served');
           }
         }
       }
@@ -207,16 +178,27 @@ const WaiterDashboard: React.FC = () => {
         .update({ items: updatedItems, status: newOrderStatus })
         .eq('id', orderId)
         .select();
+      console.log('[WaiterDashboard] Supabase update response:', { updateData, updateError });
       if (updateError) {
         toast.error('Failed to update status');
+        console.error('[WaiterDashboard] Status update error for', dishName, ':', updateError);
       } else {
         toast.success('Status updated!');
+        console.log('[WaiterDashboard] Status update success for', dishName, 'to', nextStatus, updateData);
+        // Log the updated assigned_waiter_id and waiter.staff_id for debug
+        const staff = sessionStorage.getItem('staff');
+        const waiter = staff ? JSON.parse(staff) : null;
+        if (updateData && updateData[0]) {
+          const updatedItem = updateData[0].items.find((item: any) => item.name === dishName);
+          console.log('[WaiterDashboard] After update: assigned_waiter_id for dish', dishName, 'is', updatedItem?.assigned_waiter_id, 'waiter.staff_id:', waiter?.staff_id, 'waiter_status:', updatedItem?.waiter_status, 'cook_status:', updatedItem?.cook_status);
+        }
       }
       // Refresh assigned tasks
       const staff = sessionStorage.getItem('staff');
       if (staff) fetchAssignedTasks(JSON.parse(staff));
     } catch (err: any) {
       toast.error('Failed to update status');
+      console.error('[WaiterDashboard] Status update error for', dishName, ':', err);
     } finally {
       setUpdatingDish(null);
     }
@@ -227,63 +209,9 @@ const WaiterDashboard: React.FC = () => {
     navigate('/staff-login');
   };
 
-  const testNotificationSystem = async () => {
-    const deviceInfo = notificationService.getDeviceInfo();
-    console.log('Device Info:', deviceInfo);
-    
-    const success = await notificationService.showTestNotification();
-    if (success) {
-      toast.success('Test notification sent!');
-    } else {
-      toast.error('Failed to send test notification');
-    }
-  };
-
   return (
     <div className="p-8">
-      <div className="flex justify-between items-center mb-4">
-        <h1 className="text-2xl font-bold">Welcome, {waiterName} (Waiter)</h1>
-        <div className="flex items-center space-x-4">
-          <div className="flex items-center space-x-2 text-sm">
-            <div className={`w-3 h-3 rounded-full ${notificationPermission === 'granted' ? 'bg-green-500' : 'bg-red-500'}`}></div>
-            <span className={notificationPermission === 'granted' ? 'text-green-600' : 'text-red-600'}>
-              {notificationService.isMobile() ? 'Mobile: Browser + App Alerts' : 'Desktop: Browser + App Alerts'}
-            </span>
-            {notificationPermission !== 'granted' && (
-              <button
-                onClick={requestNotificationPermission}
-                className="ml-2 px-2 py-1 bg-blue-600 text-white text-xs rounded hover:bg-blue-700 transition-colors"
-              >
-                Enable
-              </button>
-            )}
-            {notificationPermission === 'granted' && (
-              <button
-                onClick={testNotificationSystem}
-                className="ml-2 px-2 py-1 bg-green-600 text-white text-xs rounded hover:bg-green-700 transition-colors"
-                title="Test notification"
-              >
-                Test
-              </button>
-            )}
-            {notificationPermission === 'default' && (
-              <button
-                onClick={requestNotificationPermission}
-                className="ml-2 px-2 py-1 bg-yellow-600 text-white text-xs rounded hover:bg-yellow-700 transition-colors"
-                title="Request permission"
-              >
-                Request
-              </button>
-            )}
-          </div>
-          <button
-            onClick={handleLogout}
-            className="px-3 py-1 bg-gray-600 text-white text-sm rounded hover:bg-gray-700 transition-colors"
-          >
-            Logout
-          </button>
-        </div>
-      </div>
+      <h1 className="text-2xl font-bold mb-4">Welcome, {waiterName} (Waiter)</h1>
       <div className="bg-white rounded shadow p-6">
         <h2 className="text-xl font-semibold mb-2">Assigned Serving Tasks</h2>
         {loading ? (
