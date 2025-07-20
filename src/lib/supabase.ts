@@ -64,6 +64,10 @@ export interface OrderItem {
   name: string;
   quantity: number;
   price: number;
+  assigned_cook_id?: string | null;
+  assigned_waiter_id?: string | null;
+  cook_status?: 'pending' | 'preparing' | 'completed' | string;
+  waiter_status?: 'pending' | 'accepted' | 'served' | string;
 }
 
 export interface ActivityLog {
@@ -81,6 +85,19 @@ export interface Admin {
   email: string;
   password: string;
   name: string;
+  created_at: string;
+}
+
+export interface Staff {
+  id: string;
+  restaurant_id: string;
+  full_name: string;
+  phone_number: string;
+  role: 'waiter' | 'cook';
+  staff_id: string;
+  password: string;
+  is_active: boolean;
+  last_login?: string;
   created_at: string;
 }
 

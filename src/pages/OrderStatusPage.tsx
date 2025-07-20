@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { useParams } from 'react-router-dom';
 import { Clock, CheckCircle, User, Phone, MapPin, ShoppingBag, ArrowLeft } from 'lucide-react';
 import { supabase } from '../lib/supabase';
@@ -30,6 +30,98 @@ interface Restaurant {
   phone_number: string;
 }
 
+function getOrderStatusMessage(status: string, orderId: string, tableNumber: number): string {
+  const id = orderId.slice(-8).toUpperCase();
+  switch (status) {
+    case 'preparing':
+      return `🥘 Your food just started its journey from raw to WOW! (Order #${id}, Table ${tableNumber})`;
+    case 'food_prepared':
+      return `🍽️ Your food’s ready and posing for a plate-selfie! (Order #${id}, Table ${tableNumber})`;
+    case 'serving':
+      return `🍛 Your food’s doing a runway walk to your table! (Order #${id}, Table ${tableNumber})`;
+    case 'served':
+      return `🍴 Forks up! Your food has landed, Enjoy your meal. (Order #${id}, Table ${tableNumber})`;
+    case 'completed':
+      return `😋 Plate cleaned, hearts full. Come back soon! (Order #${id}, Table ${tableNumber})`;
+    default:
+      return `Your order status has been updated to ${status}. (Order #${id}, Table ${tableNumber})`;
+  }
+}
+
+function showRegularNotification(orderId: string, status: string, tableNumber: number) {
+  // Android-specific notification options
+  const notificationOptions = {
+    body: getOrderStatusMessage(status, orderId, tableNumber),
+    tag: `order-${orderId}-${status}`, // Prevent duplicate notifications
+    requireInteraction: false,
+    silent: false,
+    vibrate: [200, 100, 200], // Vibration pattern for Android
+    // Only add icon if it exists (optional for better Android support)
+    ...(typeof window !== 'undefined' && {
+      icon: '/favicon.ico',
+      badge: '/favicon.ico'
+    }),
+    actions: [
+      {
+        action: 'view',
+        title: 'View Order'
+      }
+    ]
+  };
+
+  try {
+    const notification = new Notification('Order Update', notificationOptions);
+    // Handle notification click
+    notification.onclick = function() {
+      window.focus();
+      this.close();
+    };
+    // Auto-close notification after 5 seconds on Android
+    if (/Android/i.test(navigator.userAgent)) {
+      setTimeout(() => {
+        notification.close();
+      }, 5000);
+    }
+  } catch (error) {
+    console.error('Error showing notification:', error);
+    // Fallback for older browsers
+    try {
+      new Notification('Order Update', {
+        body: getOrderStatusMessage(status, orderId, tableNumber)
+      });
+    } catch (fallbackError) {
+      console.error('Fallback notification also failed:', fallbackError);
+    }
+  }
+}
+
+function showOrderNotification(orderId: string, status: string, tableNumber: number) {
+  if ('Notification' in window && Notification.permission === 'granted') {
+    // Check if we're on Android
+    const isAndroid = /Android/i.test(navigator.userAgent);
+    console.log('Showing notification on Android:', isAndroid);
+    // For Android, try to use service worker if available
+    if (isAndroid && 'serviceWorker' in navigator && navigator.serviceWorker.controller) {
+      console.log('Using service worker for notification');
+      navigator.serviceWorker.ready.then(function(registration) {
+        registration.showNotification('Order Update', {
+          body: getOrderStatusMessage(status, orderId, tableNumber),
+          tag: `order-${orderId}-${status}`,
+          requireInteraction: false,
+          silent: false,
+          vibrate: [200, 100, 200]
+        });
+      }).catch(function(error) {
+        console.error('Service worker notification failed:', error);
+        // Fall back to regular notification
+        showRegularNotification(orderId, status, tableNumber);
+      });
+      return;
+    }
+    showRegularNotification(orderId, status, tableNumber);
+  }
+}
+
 export default function OrderStatusPage() {
   const { orderId } = useParams<{ orderId: string }>();
   const [order, setOrder] = useState<Order | null>(null);
@@ -37,12 +129,43 @@ export default function OrderStatusPage() {
   const [loading, setLoading] = useState(true);
   const [timeRemaining, setTimeRemaining] = useState(1080); // 18 minutes in seconds
   const [error, setError] = useState('');
+  const lastNotifiedStatus = useRef<string | null>(null);
 
   useEffect(() => {
-    if (orderId) {
-      loadOrderData();
-      setupRealtimeSubscription();
+    // When order is first loaded, set lastNotifiedStatus to current status to avoid duplicate notification
+    if (order && order.status) {
+      lastNotifiedStatus.current = order.status;
     }
+  }, [order]);
+
+  useEffect(() => {
+    if (!orderId) return;
+    loadOrderData();
+    // --- Realtime subscription for this order ---
+    const channel = supabase
+      .channel('order-updates')
+      .on(
+        'postgres_changes',
+        {
+          event: '*',
+          schema: 'public',
+          table: 'orders',
+          filter: `id=eq.${orderId}`
+        },
+        (payload) => {
+          const updatedOrder = payload.new as Order;
+          setOrder(updatedOrder);
+          // Only notify if status changed and user is viewing this order
+          if (updatedOrder && updatedOrder.status && lastNotifiedStatus.current !== updatedOrder.status) {
+            showOrderNotification(updatedOrder.id, updatedOrder.status, updatedOrder.table_number);
+            lastNotifiedStatus.current = updatedOrder.status;
+          }
+        }
+      )
+      .subscribe();
+    return () => {
+      channel.unsubscribe();
+    };
   }, [orderId]);
 
   useEffect(() => {

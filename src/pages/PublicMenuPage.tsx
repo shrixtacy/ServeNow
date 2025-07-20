@@ -1,7 +1,8 @@
 import React, { useState, useEffect } from 'react';
-import { useParams } from 'react-router-dom';
-import { ShoppingCart, Plus, Minus, Star, TrendingUp, Clock, User, Phone, MapPin, CheckCircle } from 'lucide-react';
-import { supabase } from '../lib/supabase';
+import { useParams, useNavigate } from 'react-router-dom';
+import { ShoppingCart, Plus, Minus, Star, TrendingUp, Clock, User, Phone, MapPin, CheckCircle, Trash2, History } from 'lucide-react';
+import { supabase, Staff } from '../lib/supabase';
+import CustomerHistory from '../components/CustomerHistory';
 
 interface Dish {
   id: string;
@@ -38,6 +39,7 @@ interface Restaurant {
 
 export default function PublicMenuPage() {
   const { managerId } = useParams<{ managerId: string }>();
+  const navigate = useNavigate();
   const [restaurant, setRestaurant] = useState<Restaurant | null>(null);
   const [dishes, setDishes] = useState<Dish[]>([]);
   const [cart, setCart] = useState<CartItem[]>([]);
@@ -48,14 +50,37 @@ export default function PublicMenuPage() {
     tableNumber: '',
     notes: ''
   });
+  const [customerHistory, setCustomerHistory] = useState<{ name: string; phone: string } | null>(null);
   const [orderSubmitted, setOrderSubmitted] = useState(false);
   const [loading, setLoading] = useState(true);
   const [isSubmittingOrder, setIsSubmittingOrder] = useState(false);
   const [addedItems, setAddedItems] = useState<Set<string>>(new Set());
+  const [removedItemName, setRemovedItemName] = useState<string | null>(null);
+  const [formErrors, setFormErrors] = useState<{ name?: string; phone?: string }>({});
+  const [showCustomerHistory, setShowCustomerHistory] = useState(false);
 
   useEffect(() => {
     if (managerId) {
       loadRestaurantData();
+      // --- Realtime subscription for dishes ---
+      const channel = supabase
+        .channel('publicmenu-dishes-realtime')
+        .on(
+          'postgres_changes',
+          {
+            event: '*',
+            schema: 'public',
+            table: 'dishes',
+            filter: `restaurant_id=eq.${managerId}`
+          },
+          (payload) => {
+            loadRestaurantData();
+          }
+        )
+        .subscribe();
+      return () => {
+        channel.unsubscribe();
+      };
     }
   }, [managerId]);
 
@@ -96,7 +121,8 @@ export default function PublicMenuPage() {
   };
 
   const addToCart = (dish: Dish) => {
-    // Show brief "Added!" feedback
+    // Prevent negative or zero quantity add
+    if (dish.price < 0) return;
     setAddedItems(prev => new Set(prev).add(dish.id));
     setTimeout(() => {
       setAddedItems(prev => {
@@ -110,7 +136,7 @@ export default function PublicMenuPage() {
     if (existingItem) {
       setCart(cart.map(item =>
         item.dish_id === dish.id
-          ? { ...item, quantity: item.quantity + 1 }
+          ? { ...item, quantity: Math.max(item.quantity + 1, 1) }
           : item
       ));
     } else {
@@ -123,14 +149,83 @@ export default function PublicMenuPage() {
     }
   };
 
+  const addItemToCart = (item: { dish_id: string; name: string; price: number; quantity: number }) => {
+    const existingItem = cart.find(cartItem => cartItem.dish_id === item.dish_id);
+    if (existingItem) {
+      setCart(cart.map(cartItem =>
+        cartItem.dish_id === item.dish_id
+          ? { ...cartItem, quantity: cartItem.quantity + item.quantity }
+          : cartItem
+      ));
+    } else {
+      setCart([...cart, {
+        dish_id: item.dish_id,
+        name: item.name,
+        price: item.price,
+        quantity: item.quantity
+      }]);
+    }
+  };
+
+  const loadCustomerHistory = async (phoneNumber: string) => {
+    if (phoneNumber.length !== 10) return;
+    
+    try {
+      const { data: orders, error } = await supabase
+        .from('orders')
+        .select('customer_name, customer_phone')
+        .eq('restaurant_id', restaurant?.id)
+        .eq('customer_phone', phoneNumber)
+        .order('order_time', { ascending: false })
+        .limit(1);
+
+      if (error) {
+        console.error('Error loading customer history:', error);
+        return;
+      }
+
+      if (orders && orders.length > 0) {
+        setCustomerHistory({
+          name: orders[0].customer_name,
+          phone: orders[0].customer_phone || ''
+        });
+      } else {
+        setCustomerHistory(null);
+      }
+    } catch (error) {
+      console.error('Error loading customer history:', error);
+    }
+  };
+
   const updateQuantity = (dishId: string, change: number) => {
-    setCart(cart.map(item => {
+    setCart(prevCart => {
+      const updatedCart = prevCart.map(item => {
       if (item.dish_id === dishId) {
         const newQuantity = item.quantity + change;
-        return newQuantity > 0 ? { ...item, quantity: newQuantity } : item;
+          // Prevent negative quantities
+          return newQuantity > 0 ? { ...item, quantity: newQuantity } : null;
       }
       return item;
-    }).filter(item => item.quantity > 0));
+      }).filter((item): item is CartItem => item !== null && item.quantity > 0);
+      // If item was removed, show toast
+      const originalItem = prevCart.find(item => item.dish_id === dishId);
+      if (originalItem && originalItem.quantity + change <= 0) {
+        setRemovedItemName(originalItem.name);
+        setTimeout(() => setRemovedItemName(null), 2000);
+      }
+      return updatedCart;
+    });
+  };
+
+  const removeFromCart = (dishId: string) => {
+    setCart(prevCart => {
+      const item = prevCart.find(i => i.dish_id === dishId);
+      if (item) {
+        setRemovedItemName(item.name);
+        setTimeout(() => setRemovedItemName(null), 2000);
+      }
+      return prevCart.filter(i => i.dish_id !== dishId);
+    });
   };
 
   const getTotalPrice = () => {
@@ -141,40 +236,111 @@ export default function PublicMenuPage() {
     return cart.reduce((total, item) => total + item.quantity, 0);
   };
 
+  const validateOrderForm = () => {
+    const errors: { name?: string; phone?: string } = {};
+    // Name validation: required, max 40 chars
+    if (!orderForm.customerName.trim()) {
+      errors.name = 'Name is required.';
+    } else if (orderForm.customerName.length > 40) {
+      errors.name = 'Name must be at most 40 characters.';
+    }
+    // Phone validation: optional, but if present must be 10 digits
+    if (orderForm.customerPhone) {
+      const phone = orderForm.customerPhone.replace(/\D/g, '');
+      if (phone.length !== 10) {
+        errors.phone = 'Phone number must be exactly 10 digits.';
+      }
+    }
+    setFormErrors(errors);
+    return Object.keys(errors).length === 0;
+  };
+
   const submitOrder = async () => {
     if (!restaurant || cart.length === 0 || !orderForm.customerName || !orderForm.tableNumber) {
       return;
     }
-
+    // API validation
+    if (!validateOrderForm()) {
+      return;
+    }
+    // Request notification permission only on user interaction (place order)
+    if ('Notification' in window && Notification.permission === 'default') {
+      console.log('Requesting notification permission (public user order)...');
+      try {
+        await Notification.requestPermission();
+        console.log('Notification permission result:', Notification.permission);
+      } catch (err) {
+        console.log('Notification.requestPermission() error:', err);
+      }
+    }
     setIsSubmittingOrder(true);
-
     try {
+      // Fetch available cooks and waiters
+      const { data: staffList, error: staffError } = await supabase
+        .from('staff')
+        .select('*')
+        .eq('restaurant_id', restaurant.id)
+        .eq('is_active', true);
+      if (staffError || !staffList) throw new Error('Failed to fetch staff');
+      const cooks = staffList.filter(s => s.role === 'cook');
+      const waiters = staffList.filter(s => s.role === 'waiter');
+      // Fetch all open orders to count active tasks
+      const { data: openOrders } = await supabase
+        .from('orders')
+        .select('items')
+        .eq('restaurant_id', restaurant.id)
+        .in('status', ['pending', 'preparing', 'ready']);
+      const cookTaskCount: Record<string, number> = {};
+      const waiterTaskCount: Record<string, number> = {};
+      cooks.forEach(c => cookTaskCount[c.id] = 0);
+      waiters.forEach(w => waiterTaskCount[w.id] = 0);
+      if (openOrders) {
+        for (const order of openOrders) {
+          for (const item of order.items) {
+            if (item.assigned_cook_id && cookTaskCount[item.assigned_cook_id] !== undefined) cookTaskCount[item.assigned_cook_id]++;
+            if (item.assigned_waiter_id && waiterTaskCount[item.assigned_waiter_id] !== undefined) waiterTaskCount[item.assigned_waiter_id]++;
+          }
+        }
+      }
+      // Assign each dish to the least-busy cook and waiter
+      const assignedItems = cart.map((item) => {
+        const leastBusyCook = cooks.length > 0
+          ? cooks.reduce((min, c) => cookTaskCount[c.id] < cookTaskCount[min.id] ? c : min, cooks[0])
+          : null;
+        const leastBusyWaiter = waiters.length > 0
+          ? waiters.reduce((min, w) => waiterTaskCount[w.id] < waiterTaskCount[min.id] ? w : min, waiters[0])
+          : null;
+        if (leastBusyCook) cookTaskCount[leastBusyCook.id]++;
+        if (leastBusyWaiter) waiterTaskCount[leastBusyWaiter.id]++;
+        return {
+          ...item,
+          assigned_cook_id: leastBusyCook ? leastBusyCook.id : null,
+          assigned_waiter_id: leastBusyWaiter ? leastBusyWaiter.id : null,
+        };
+      });
       // Prepare order data for Supabase
       const orderData = {
         restaurant_id: restaurant.id,
         customer_name: orderForm.customerName,
         customer_phone: orderForm.customerPhone || null,
         table_number: parseInt(orderForm.tableNumber),
-        items: cart,
+        items: assignedItems,
         total: getTotalPrice(),
         status: 'pending' as const,
         notes: orderForm.notes || null
       };
-
       // Insert order into Supabase
       const { data: newOrder, error } = await supabase
         .from('orders')
         .insert(orderData)
         .select()
         .single();
-
       if (error) {
         console.error('Error submitting order:', error);
         alert('Failed to submit order. Please try again.');
         setIsSubmittingOrder(false);
         return;
       }
-
       // Redirect to order status page
       window.location.href = `/order-status/${newOrder.id}`;
     } catch (error) {
@@ -234,6 +400,12 @@ export default function PublicMenuPage() {
 
   return (
     <div className="min-h-screen bg-gradient-to-br from-gray-50 to-white">
+      {/* Toast for item removal */}
+      {removedItemName && (
+        <div className="fixed top-4 left-1/2 transform -translate-x-1/2 bg-red-600 text-white px-8 py-4 rounded-lg shadow-lg z-50 animate-fade-out">
+          <p className="font-semibold text-center">Removed <span className="font-bold">{removedItemName}</span> from cart</p>
+        </div>
+      )}
       {/* Sticky Cart Button */}
       {cart.length > 0 && (
         <div className="fixed top-4 right-4 z-50">
@@ -263,7 +435,7 @@ export default function PublicMenuPage() {
           <div className="text-center">
             <h1 className="text-4xl font-bold text-black mb-2">{restaurant.restaurant_name}</h1>
             <p className="text-gray-600 text-lg mb-4">{restaurant.address}</p>
-            <div className="flex flex-wrap justify-center gap-2">
+            <div className="flex flex-wrap justify-center gap-2 mb-4">
               {restaurant.cuisine_tags.split(',').map((tag, index) => (
                 <span
                   key={index}
@@ -273,6 +445,14 @@ export default function PublicMenuPage() {
                 </span>
               ))}
             </div>
+            {/* Customer History Button */}
+            <button
+              onClick={() => setShowCustomerHistory(true)}
+              className="inline-flex items-center space-x-2 bg-blue-600 text-white px-6 py-3 rounded-full hover:bg-blue-700 transition-all transform hover:scale-105 font-semibold shadow-lg"
+            >
+              <History className="w-5 h-5" />
+              <span>View Order History</span>
+            </button>
           </div>
         </div>
       </div>
@@ -565,8 +745,17 @@ export default function PublicMenuPage() {
         <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center p-4 z-50">
           <div className="bg-white rounded-2xl shadow-2xl max-w-lg w-full max-h-[90vh] overflow-y-auto">
             <div className="p-8">
-              <h3 className="text-2xl font-bold text-black mb-6">Complete Your Order</h3>
-              
+              {/* Back to Menu Button */}
+              <button
+                onClick={() => {
+                  setShowOrderForm(false);
+                  setTimeout(() => navigate(`/menu/${managerId}`), 100); // Optional: slight delay for smoothness
+                }}
+                className="flex items-center mb-6 text-black hover:text-gray-700 font-semibold text-lg focus:outline-none"
+              >
+                <svg className="w-5 h-5 mr-2" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" d="M15 19l-7-7 7-7" /></svg>
+                Back to Menu
+              </button>
               {/* Cart Summary */}
               <div className="mb-8">
                 <h4 className="text-lg font-semibold text-black mb-4">Order Summary</h4>
@@ -576,7 +765,14 @@ export default function PublicMenuPage() {
                       <div className="flex-1">
                         <span className="font-medium text-black">{item.quantity}x {item.name}</span>
                       </div>
-                      <span className="font-bold text-black">${(item.price * item.quantity).toFixed(2)}</span>
+                      <span className="font-bold text-black mr-2">${(item.price * item.quantity).toFixed(2)}</span>
+                      <button
+                        onClick={() => removeFromCart(item.dish_id)}
+                        className="p-1 text-gray-400 hover:text-red-600 transition-colors"
+                        title="Remove from cart"
+                      >
+                        <Trash2 className="w-5 h-5" />
+                      </button>
                     </div>
                   ))}
                 </div>
@@ -603,6 +799,9 @@ export default function PublicMenuPage() {
                     placeholder="Enter your name"
                     required
                   />
+                  {formErrors.name && (
+                    <p className="text-red-600 text-xs mt-1">{formErrors.name}</p>
+                  )}
                 </div>
 
                 <div>
@@ -613,10 +812,49 @@ export default function PublicMenuPage() {
                   <input
                     type="tel"
                     value={orderForm.customerPhone}
-                    onChange={(e) => setOrderForm({...orderForm, customerPhone: e.target.value})}
+                    onChange={(e) => {
+                      const phone = e.target.value;
+                      setOrderForm({...orderForm, customerPhone: phone});
+                      
+                      // Load customer history when phone number is complete
+                      if (phone.length === 10) {
+                        loadCustomerHistory(phone);
+                      } else if (phone.length < 10) {
+                        setCustomerHistory(null);
+                      }
+                      
+                      // Auto-fill customer name if phone number matches history
+                      if (phone.length === 10 && customerHistory?.phone === phone) {
+                        setOrderForm(prev => ({
+                          ...prev,
+                          customerPhone: phone,
+                          customerName: customerHistory.name
+                        }));
+                      }
+                    }}
                     className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-black focus:border-transparent outline-none"
                     placeholder="Enter your phone number"
+                    maxLength={10}
                   />
+                  {formErrors.phone && (
+                    <p className="text-red-600 text-xs mt-1">{formErrors.phone}</p>
+                  )}
+                  {customerHistory && customerHistory.phone === orderForm.customerPhone && (
+                    <div className="mt-2">
+                      <p className="text-green-600 text-xs flex items-center mb-2">
+                        <CheckCircle className="w-3 h-3 mr-1" />
+                        Welcome back, {customerHistory.name}!
+                      </p>
+                      <button
+                        type="button"
+                        onClick={() => setShowCustomerHistory(true)}
+                        className="text-xs text-blue-600 hover:text-blue-800 font-medium flex items-center"
+                      >
+                        <History className="w-3 h-3 mr-1" />
+                        View your previous orders
+                      </button>
+                    </div>
+                  )}
                 </div>
 
                 <div>
@@ -673,6 +911,15 @@ export default function PublicMenuPage() {
             </div>
           </div>
         </div>
+      )}
+
+      {/* Customer History Modal */}
+      {showCustomerHistory && (
+        <CustomerHistory
+          restaurantId={restaurant.id}
+          onAddToCart={addItemToCart}
+          onClose={() => setShowCustomerHistory(false)}
+        />
       )}
     </div>
   );

@@ -40,8 +40,42 @@ export default function RestaurantDetails() {
 
     if (managerId) {
       loadRestaurantData();
+      // --- Realtime subscriptions for all tables ---
+      let restaurantId = null;
+      const fetchAndSetRestaurantId = async () => {
+        const { data: restaurant } = await supabase
+          .from('restaurants')
+          .select('id')
+          .eq('manager_id', managerId)
+          .single();
+        restaurantId = restaurant?.id;
+        if (restaurantId) {
+          const tables = ['restaurants', 'dishes', 'tables', 'orders'];
+          const channels = tables.map(table =>
+            supabase
+              .channel(`${table}-realtime`)
+              .on(
+                'postgres_changes',
+                {
+                  event: '*',
+                  schema: 'public',
+                  table,
+                  filter: `restaurant_id=eq.${restaurantId}`
+                },
+                (payload) => {
+                  loadRestaurantData();
+                }
+              )
+              .subscribe()
+          );
+          return () => {
+            channels.forEach(channel => channel.unsubscribe());
+          };
+        }
+      };
+      fetchAndSetRestaurantId();
     }
-  }, [managerId, navigate]);
+  }, [managerId]);
 
   const loadRestaurantData = async () => {
     try {
@@ -147,6 +181,26 @@ export default function RestaurantDetails() {
   const getTodaysRevenue = () => {
     const todaysOrders = getTodaysOrders();
     return todaysOrders.reduce((total, order) => total + order.total, 0);
+  };
+
+  const handleDeleteRestaurant = async () => {
+    if (!restaurant) return;
+    if (!window.confirm('Are you sure you want to delete this restaurant and all its data? This action cannot be undone.')) return;
+    try {
+      setIsLoading(true);
+      await supabase.from('staff').delete().eq('restaurant_id', restaurant?.id);
+      await supabase.from('orders').delete().eq('restaurant_id', restaurant?.id);
+      await supabase.from('tables').delete().eq('restaurant_id', restaurant?.id);
+      await supabase.from('dishes').delete().eq('restaurant_id', restaurant?.id);
+      await supabase.from('activity_logs').delete().eq('restaurant_id', restaurant?.id);
+      const { error: restaurantError } = await supabase.from('restaurants').delete().eq('id', restaurant?.id);
+      if (restaurantError) throw restaurantError;
+      alert('Restaurant and all related data deleted successfully.');
+      navigate('/admin/dashboard');
+    } catch (err: any) {
+      setIsLoading(false);
+      alert('Failed to delete restaurant: ' + (err.message || err));
+    }
   };
 
   if (isLoading) {
@@ -611,6 +665,25 @@ export default function RestaurantDetails() {
           </div>
         </div>
       </div>
+      {/* Danger Zone Delete Button */}
+      {restaurant && (
+        <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 mt-8 mb-12">
+          <div className="bg-white border border-red-200 rounded-lg p-6 flex flex-col items-center">
+            <h2 className="text-xl font-bold text-red-700 mb-2 flex items-center">
+              <Store className="w-5 h-5 mr-2 text-red-700" />
+              Danger Zone
+            </h2>
+            <p className="text-gray-600 mb-4 text-center">Deleting this restaurant will permanently remove all its data, including menu items, tables, orders, staff, and activity logs. This action cannot be undone.</p>
+            <button
+              onClick={handleDeleteRestaurant}
+              className="mt-2 px-6 py-3 bg-red-600 text-white rounded-lg font-semibold hover:bg-red-700 transition-colors shadow disabled:opacity-50 disabled:cursor-not-allowed"
+              disabled={isLoading}
+            >
+              {isLoading ? 'Deleting...' : 'Delete Restaurant'}
+            </button>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
