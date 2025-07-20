@@ -15,7 +15,6 @@ import OrderStatusPage from './pages/OrderStatusPage';
 import StaffLogin from './pages/StaffLogin';
 import CookDashboard from './pages/CookDashboard';
 import WaiterDashboard from './pages/WaiterDashboard';
-import NotificationTest from './pages/NotificationTest';
 
 function App() {
   return (
@@ -37,7 +36,6 @@ function App() {
         <Route path="/staff-login" element={<StaffLogin />} />
         <Route path="/cook/dashboard" element={<CookDashboard />} />
         <Route path="/waiter/dashboard" element={<WaiterDashboard />} />
-        <Route path="/notification-test" element={<NotificationTest />} />
       </Routes>
     </Router>
   );
