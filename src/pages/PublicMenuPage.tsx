@@ -1,7 +1,8 @@
 import React, { useState, useEffect } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
-import { ShoppingCart, Plus, Minus, Star, TrendingUp, Clock, User, Phone, MapPin, CheckCircle, Trash2 } from 'lucide-react';
+import { ShoppingCart, Plus, Minus, Star, TrendingUp, Clock, User, Phone, MapPin, CheckCircle, Trash2, History } from 'lucide-react';
 import { supabase, Staff } from '../lib/supabase';
+import CustomerHistory from '../components/CustomerHistory';
 
 interface Dish {
   id: string;
@@ -49,12 +50,14 @@ export default function PublicMenuPage() {
     tableNumber: '',
     notes: ''
   });
+  const [customerHistory, setCustomerHistory] = useState<{ name: string; phone: string } | null>(null);
   const [orderSubmitted, setOrderSubmitted] = useState(false);
   const [loading, setLoading] = useState(true);
   const [isSubmittingOrder, setIsSubmittingOrder] = useState(false);
   const [addedItems, setAddedItems] = useState<Set<string>>(new Set());
   const [removedItemName, setRemovedItemName] = useState<string | null>(null);
   const [formErrors, setFormErrors] = useState<{ name?: string; phone?: string }>({});
+  const [showCustomerHistory, setShowCustomerHistory] = useState(false);
 
   useEffect(() => {
     if (managerId) {
@@ -143,6 +146,54 @@ export default function PublicMenuPage() {
         price: dish.price,
         quantity: 1
       }]);
+    }
+  };
+
+  const addItemToCart = (item: { dish_id: string; name: string; price: number; quantity: number }) => {
+    const existingItem = cart.find(cartItem => cartItem.dish_id === item.dish_id);
+    if (existingItem) {
+      setCart(cart.map(cartItem =>
+        cartItem.dish_id === item.dish_id
+          ? { ...cartItem, quantity: cartItem.quantity + item.quantity }
+          : cartItem
+      ));
+    } else {
+      setCart([...cart, {
+        dish_id: item.dish_id,
+        name: item.name,
+        price: item.price,
+        quantity: item.quantity
+      }]);
+    }
+  };
+
+  const loadCustomerHistory = async (phoneNumber: string) => {
+    if (phoneNumber.length !== 10) return;
+    
+    try {
+      const { data: orders, error } = await supabase
+        .from('orders')
+        .select('customer_name, customer_phone')
+        .eq('restaurant_id', restaurant?.id)
+        .eq('customer_phone', phoneNumber)
+        .order('order_time', { ascending: false })
+        .limit(1);
+
+      if (error) {
+        console.error('Error loading customer history:', error);
+        return;
+      }
+
+      if (orders && orders.length > 0) {
+        setCustomerHistory({
+          name: orders[0].customer_name,
+          phone: orders[0].customer_phone || ''
+        });
+      } else {
+        setCustomerHistory(null);
+      }
+    } catch (error) {
+      console.error('Error loading customer history:', error);
     }
   };
 
@@ -384,7 +435,7 @@ export default function PublicMenuPage() {
           <div className="text-center">
             <h1 className="text-4xl font-bold text-black mb-2">{restaurant.restaurant_name}</h1>
             <p className="text-gray-600 text-lg mb-4">{restaurant.address}</p>
-            <div className="flex flex-wrap justify-center gap-2">
+            <div className="flex flex-wrap justify-center gap-2 mb-4">
               {restaurant.cuisine_tags.split(',').map((tag, index) => (
                 <span
                   key={index}
@@ -394,6 +445,14 @@ export default function PublicMenuPage() {
                 </span>
               ))}
             </div>
+            {/* Customer History Button */}
+            <button
+              onClick={() => setShowCustomerHistory(true)}
+              className="inline-flex items-center space-x-2 bg-blue-600 text-white px-6 py-3 rounded-full hover:bg-blue-700 transition-all transform hover:scale-105 font-semibold shadow-lg"
+            >
+              <History className="w-5 h-5" />
+              <span>View Order History</span>
+            </button>
           </div>
         </div>
       </div>
@@ -753,12 +812,48 @@ export default function PublicMenuPage() {
                   <input
                     type="tel"
                     value={orderForm.customerPhone}
-                    onChange={(e) => setOrderForm({...orderForm, customerPhone: e.target.value})}
+                    onChange={(e) => {
+                      const phone = e.target.value;
+                      setOrderForm({...orderForm, customerPhone: phone});
+                      
+                      // Load customer history when phone number is complete
+                      if (phone.length === 10) {
+                        loadCustomerHistory(phone);
+                      } else if (phone.length < 10) {
+                        setCustomerHistory(null);
+                      }
+                      
+                      // Auto-fill customer name if phone number matches history
+                      if (phone.length === 10 && customerHistory?.phone === phone) {
+                        setOrderForm(prev => ({
+                          ...prev,
+                          customerPhone: phone,
+                          customerName: customerHistory.name
+                        }));
+                      }
+                    }}
                     className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-black focus:border-transparent outline-none"
                     placeholder="Enter your phone number"
+                    maxLength={10}
                   />
                   {formErrors.phone && (
                     <p className="text-red-600 text-xs mt-1">{formErrors.phone}</p>
+                  )}
+                  {customerHistory && customerHistory.phone === orderForm.customerPhone && (
+                    <div className="mt-2">
+                      <p className="text-green-600 text-xs flex items-center mb-2">
+                        <CheckCircle className="w-3 h-3 mr-1" />
+                        Welcome back, {customerHistory.name}!
+                      </p>
+                      <button
+                        type="button"
+                        onClick={() => setShowCustomerHistory(true)}
+                        className="text-xs text-blue-600 hover:text-blue-800 font-medium flex items-center"
+                      >
+                        <History className="w-3 h-3 mr-1" />
+                        View your previous orders
+                      </button>
+                    </div>
                   )}
                 </div>
 
@@ -816,6 +911,15 @@ export default function PublicMenuPage() {
             </div>
           </div>
         </div>
+      )}
+
+      {/* Customer History Modal */}
+      {showCustomerHistory && (
+        <CustomerHistory
+          restaurantId={restaurant.id}
+          onAddToCart={addItemToCart}
+          onClose={() => setShowCustomerHistory(false)}
+        />
       )}
     </div>
   );
